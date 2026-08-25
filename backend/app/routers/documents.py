@@ -15,6 +15,11 @@ from app.models import Document
 from app.schemas import DocumentResponse, DocumentUpdateRequest, CollectionStats
 from app.services.image_processor import ImageProcessor
 from app.services.pipeline import pipeline
+from app.services.vision_client import (
+    AIServiceUnavailableError,
+    AuthenticationError,
+    ModelNotFoundError
+)
 
 logger = logging.getLogger("documents_router")
 router = APIRouter(prefix="/documents", tags=["documents"])
@@ -25,32 +30,35 @@ async def upload_documents(
     db: Session = Depends(get_db)
 ):
     """
-    Ingests one or more images into the Universal Multimodal Document Pipeline.
-    Runs Stage 1A (Classify) and Stage 1B (Dynamic Extract) per image.
+    Stage 1 Entry: Multimodal Ingestion Pipeline.
+    Uploads 1 to N images, runs dynamic 2-stage vision analysis, saves records.
     """
-    results: List[Document] = []
-    
+    if not files:
+        raise HTTPException(status_code=400, detail="No files provided for upload.")
+
+    results = []
     for file in files:
-        # Validate extension
-        suffix = Path(file.filename).suffix.lower()
-        if suffix not in settings.ALLOWED_EXTENSIONS:
-            raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix}")
+        ext = Path(file.filename).suffix.lower()
+        if ext not in settings.ALLOWED_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file format '{ext}'. Allowed: {settings.ALLOWED_EXTENSIONS}"
+            )
 
         file_bytes = await file.read()
         if len(file_bytes) > settings.MAX_FILE_SIZE_MB * 1024 * 1024:
-            raise HTTPException(status_code=400, detail=f"File {file.filename} exceeds {settings.MAX_FILE_SIZE_MB}MB limit.")
+            raise HTTPException(
+                status_code=400,
+                detail=f"File exceeds maximum allowed size of {settings.MAX_FILE_SIZE_MB}MB"
+            )
 
-        # Compute content hash for deduplication
-        content_hash = ImageProcessor.compute_hash(file_bytes)
-        
         # Unique save path
-        unique_name = f"{uuid.uuid4().hex}_{Path(file.filename).stem}{suffix}"
+        unique_name = f"{uuid.uuid4().hex}_{Path(file.filename).stem}{ext}"
         destination = settings.UPLOAD_DIR / unique_name
         
         # Process and save with EXIF orientation correction
         meta = ImageProcessor.process_and_save(file_bytes, destination)
-        
-        # Run Two-Stage Pipeline with graceful 503 handling
+
         try:
             doc, is_dup = await pipeline.process_image_two_stage(
                 image_path=meta["saved_path"],
@@ -62,13 +70,20 @@ async def upload_documents(
             results.append(doc)
         except HTTPException:
             raise
-        except Exception as e:
+        except (AIServiceUnavailableError, Exception) as e:
+            if isinstance(e, AuthenticationError):
+                logger.error(f"Hugging Face auth failure on upload: {e}")
+                raise HTTPException(status_code=401, detail="Hugging Face authentication failed.")
+            if isinstance(e, ModelNotFoundError):
+                logger.error(f"Hugging Face model not found on upload: {e}")
+                raise HTTPException(status_code=404, detail="Hugging Face model is unavailable.")
+            
             err_str = str(e).lower()
-            if any(term in err_str for term in ["503", "unavailable", "high demand", "overloaded", "aiserviceunavailable"]):
-                logger.error(f"Gemini API 503 unavailable on upload: {e}")
+            if isinstance(e, AIServiceUnavailableError) or any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "temporarily busy", "aiserviceunavailable"]):
+                logger.error(f"Hugging Face API 503/429 unavailable on upload: {e}")
                 raise HTTPException(
                     status_code=503,
-                    detail="The AI service is temporarily unavailable. Please try again in a moment."
+                    detail="The AI service is temporarily busy. Please try again in a few seconds."
                 )
             logger.error(f"Upload processing failed for {file.filename}: {e}", exc_info=True)
             raise HTTPException(status_code=500, detail=f"Upload processing failed: {str(e)}")
@@ -209,28 +224,39 @@ async def reprocess_document(doc_id: int, db: Session = Depends(get_db)):
     if not doc or not os.path.exists(doc.image_path):
         raise HTTPException(status_code=404, detail="Document or image file not found")
 
+    logger.info(f"[REPROCESS] Explicitly reprocessing document #{doc_id} ({doc.original_filename})...")
+
     with open(doc.image_path, "rb") as f:
         file_bytes = f.read()
 
-    # Re-run pipeline with graceful 503 handling
+    # Re-run pipeline with graceful 503 handling and force reprocessing
     try:
         reprocessed, _ = await pipeline.process_image_two_stage(
             image_path=doc.image_path,
             original_filename=doc.original_filename,
             file_bytes=file_bytes,
             db=db,
-            meta_info=doc.meta_info
+            meta_info=doc.meta_info,
+            force_reprocess=True,
+            existing_doc_id=doc_id
         )
         return reprocessed
     except HTTPException:
         raise
-    except Exception as e:
+    except (AIServiceUnavailableError, Exception) as e:
+        if isinstance(e, AuthenticationError):
+            logger.error(f"Hugging Face auth failure on reprocess: {e}")
+            raise HTTPException(status_code=401, detail=f"Hugging Face authentication failed: {str(e)}")
+        if isinstance(e, ModelNotFoundError):
+            logger.error(f"Hugging Face model not found on reprocess: {e}")
+            raise HTTPException(status_code=404, detail=f"Hugging Face model is unavailable: {str(e)}")
+
         err_str = str(e).lower()
-        if any(term in err_str for term in ["503", "unavailable", "high demand", "overloaded", "aiserviceunavailable"]):
-            logger.error(f"Gemini API 503 unavailable on reprocess: {e}")
+        if isinstance(e, AIServiceUnavailableError) or any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "temporarily busy", "aiserviceunavailable"]):
+            logger.error(f"Hugging Face API 503/429 unavailable on reprocess: {e}")
             raise HTTPException(
                 status_code=503,
-                detail="The AI service is temporarily unavailable. Please try again in a moment."
+                detail="The AI service is temporarily busy. Please try again in a few seconds."
             )
         logger.error(f"Reprocessing failed for document {doc_id}: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")

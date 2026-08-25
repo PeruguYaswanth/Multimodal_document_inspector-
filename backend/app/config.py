@@ -9,12 +9,18 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api"
     
-    # LLM Settings (Google Gemini API with GOOGLE_API_KEY support)
-    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
-    GEMINI_FALLBACK_MODEL: str = "gemini-2.5-flash"
-    GEMINI_MAX_RETRIES: int = 3
-    GEMINI_RETRY_DELAY: float = 2.0
+    # LLM Settings (Hugging Face Multimodal Vision-Language API)
+    HF_TOKEN: str = (
+        os.getenv("HF_TOKEN")
+        or os.getenv("HF_API_KEY")
+        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
+        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        or ""
+    )
+    HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen2.5-VL-72B-Instruct")
+    HF_FALLBACK_MODEL: str = "meta-llama/Llama-3.2-11B-Vision-Instruct"
+    HF_MAX_RETRIES: int = 3
+    HF_RETRY_DELAY: float = 2.0
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     

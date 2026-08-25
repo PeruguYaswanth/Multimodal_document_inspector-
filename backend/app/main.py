@@ -1,4 +1,4 @@
-﻿from dotenv import load_dotenv
+from dotenv import load_dotenv
 load_dotenv()
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
@@ -20,7 +20,11 @@ Base.metadata.create_all(bind=engine)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup tasks
+    hf_token_configured = bool(settings.HF_TOKEN and settings.HF_TOKEN.strip())
     print(f"[STARTUP] Starting {settings.PROJECT_NAME} v{settings.VERSION}")
+    print("[STARTUP] Provider: Hugging Face")
+    print(f"[STARTUP] HF token configured: {hf_token_configured}")
+    print(f"[STARTUP] HF model: {settings.HF_MODEL}")
     yield
     print("[SHUTDOWN] Stopping document analyzer backend")
 
@@ -68,8 +72,9 @@ def health_check():
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
-        "model": settings.GEMINI_MODEL,
-        "gemini_configured": bool(settings.GEMINI_API_KEY),
+        "ai_provider": "huggingface",
+        "model": settings.HF_MODEL,
+        "hf_configured": bool(settings.HF_TOKEN),
         "anthropic_configured": bool(settings.ANTHROPIC_API_KEY)
     }
 

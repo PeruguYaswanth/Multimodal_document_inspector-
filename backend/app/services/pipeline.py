@@ -15,11 +15,13 @@ class DocumentPipeline:
         original_filename: str,
         file_bytes: bytes,
         db: Session,
-        meta_info: Dict[str, Any]
+        meta_info: Dict[str, Any],
+        force_reprocess: bool = False,
+        existing_doc_id: Optional[int] = None
     ) -> Tuple[Document, bool]:
         """
         Executes the generalized Two-Stage Multimodal Extraction Pipeline:
-        1. Check de-duplication by content_hash (SHA-256)
+        1. Check de-duplication by content_hash (SHA-256) unless force_reprocess=True
         2. Stage 1A: Classification & Key Fields Detection (temp=0) based on raw image
         3. Check for non-informational images (e.g. blank canvas, abstract noise)
         4. Stage 1B: Dynamic Extraction based on detected key fields (temp=0)
@@ -28,11 +30,12 @@ class DocumentPipeline:
         """
         content_hash = ImageProcessor.compute_hash(file_bytes)
 
-        # Check existing duplicate
-        existing_doc = db.query(Document).filter(Document.content_hash == content_hash).first()
-        if existing_doc:
-            logger.info(f"Duplicate document found for hash {content_hash}, ID: {existing_doc.id}")
-            return existing_doc, True
+        # Check existing duplicate unless explicitly force reprocessing
+        if not force_reprocess:
+            existing_doc = db.query(Document).filter(Document.content_hash == content_hash).first()
+            if existing_doc:
+                logger.info(f"Duplicate document found for hash {content_hash}, ID: {existing_doc.id}")
+                return existing_doc, True
 
         # --- Stage 1A: Classification ---
         logger.info(f"Stage 1A: Classifying image {original_filename}...")
@@ -53,25 +56,28 @@ class DocumentPipeline:
 
         # Handle non-informational images
         if classification.is_non_informational:
-            doc = Document(
-                image_path=image_path,
-                original_filename=original_filename,
-                document_type="non-informational",
-                primary_subject=classification.primary_subject or "Non-Informational Image",
-                summary="Image contains no readable text or structured document features.",
-                extracted_fields={},
-                tables=[],
-                full_text="",
-                confidence="high",
-                low_confidence_notes=["Classified as non-informational / abstract image."],
-                content_hash=content_hash,
-                is_text_heavy=False,
-                is_data_heavy=False,
-                is_reviewed=True,
-                is_non_informational=True,
-                meta_info=meta_info
-            )
-            db.add(doc)
+            doc = db.query(Document).filter(Document.id == existing_doc_id).first() if existing_doc_id else None
+            if not doc:
+                doc = Document(
+                    image_path=image_path,
+                    original_filename=original_filename,
+                    content_hash=content_hash,
+                    meta_info=meta_info
+                )
+                db.add(doc)
+            
+            doc.document_type = "non-informational"
+            doc.primary_subject = classification.primary_subject or "Non-Informational Image"
+            doc.summary = "Image contains no readable text or structured document features."
+            doc.extracted_fields = {}
+            doc.tables = []
+            doc.full_text = ""
+            doc.confidence = "high"
+            doc.low_confidence_notes = ["Classified as non-informational / abstract image."]
+            doc.is_text_heavy = False
+            doc.is_data_heavy = False
+            doc.is_reviewed = True
+            doc.is_non_informational = True
             db.commit()
             db.refresh(doc)
             return doc, False
@@ -101,27 +107,30 @@ class DocumentPipeline:
         low_conf_notes = extraction_data.get("low_confidence_notes", [])
         auto_needs_review = (confidence_val.lower() == "low") or bool(low_conf_notes)
 
-        doc = Document(
-            image_path=image_path,
-            original_filename=original_filename,
-            document_type=classification.document_type,
-            primary_subject=extraction_data.get("primary_subject") or classification.primary_subject,
-            currency=extraction_data.get("currency"),
-            summary=extraction_data.get("summary", ""),
-            extracted_fields=extraction_data.get("extracted_fields", {}),
-            tables=extraction_data.get("tables", []),
-            full_text=extraction_data.get("full_text", ""),
-            confidence=confidence_val,
-            low_confidence_notes=low_conf_notes,
-            content_hash=content_hash,
-            is_text_heavy=classification.is_text_heavy,
-            is_data_heavy=classification.is_data_heavy,
-            is_reviewed=not auto_needs_review,
-            is_non_informational=False,
-            meta_info=meta_info
-        )
+        doc = db.query(Document).filter(Document.id == existing_doc_id).first() if existing_doc_id else None
+        if not doc:
+            doc = Document(
+                image_path=image_path,
+                original_filename=original_filename,
+                content_hash=content_hash,
+                meta_info=meta_info
+            )
+            db.add(doc)
 
-        db.add(doc)
+        doc.document_type = classification.document_type
+        doc.primary_subject = extraction_data.get("primary_subject") or classification.primary_subject
+        doc.currency = extraction_data.get("currency")
+        doc.summary = extraction_data.get("summary", "")
+        doc.extracted_fields = extraction_data.get("extracted_fields", {})
+        doc.tables = extraction_data.get("tables", [])
+        doc.full_text = extraction_data.get("full_text", "")
+        doc.confidence = confidence_val
+        doc.low_confidence_notes = low_conf_notes
+        doc.is_text_heavy = classification.is_text_heavy
+        doc.is_data_heavy = classification.is_data_heavy
+        doc.is_reviewed = not auto_needs_review
+        doc.is_non_informational = False
+
         db.commit()
         db.refresh(doc)
         logger.info(f"Document #{doc.id} ({doc.primary_subject}) stored successfully.")

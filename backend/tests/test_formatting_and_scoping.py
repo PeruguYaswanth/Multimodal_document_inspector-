@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from unittest.mock import AsyncMock, patch
 from fastapi.testclient import TestClient
 from PIL import Image
@@ -131,28 +131,28 @@ async def test_all_six_formatting_and_scoping_cases():
         doc3 = res3.json()[0]
 
     # --- TEST 1: Indian-formatted amount (₹1,25,450.00) ---
-    with patch.object(vision_client, "call_gemini_api", AsyncMock(return_value="The total amount on the hospital bill is ₹1,25,450.00.")):
+    with patch.object(vision_client, "call_huggingface_api", AsyncMock(return_value="The total amount on the hospital bill is ₹1,25,450.00.")):
         q1 = client.post("/api/query", json={"question": "What is the total amount on the hospital bill?", "document_ids": [doc1["id"]]})
         data1 = q1.json()
         assert "₹1,25,450.00" in data1["answer"]
         assert "$" not in data1["answer"]
 
     # --- TEST 2: US-formatted amount ($1,250.75) ---
-    with patch.object(vision_client, "call_gemini_api", AsyncMock(return_value="The total amount on the Apple receipt is $1,250.75.")):
+    with patch.object(vision_client, "call_huggingface_api", AsyncMock(return_value="The total amount on the Apple receipt is $1,250.75.")):
         q2 = client.post("/api/query", json={"question": "What is the total amount on the Apple receipt?", "document_ids": [doc2["id"]]})
         data2 = q2.json()
         assert "$1,250.75" in data2["answer"]
         assert "₹" not in data2["answer"]
 
     # --- TEST 3: No-decimal precision (₹500) ---
-    with patch.object(vision_client, "call_gemini_api", AsyncMock(return_value="The total amount on the coffee bill is ₹500.")):
+    with patch.object(vision_client, "call_huggingface_api", AsyncMock(return_value="The total amount on the coffee bill is ₹500.")):
         q3 = client.post("/api/query", json={"question": "How much was the coffee bill?", "document_ids": [doc3["id"]]})
         data3 = q3.json()
         assert "₹500" in data3["answer"]
         assert "₹500.00" not in data3["answer"]
 
     # --- TEST 4: Single document strict scoping ---
-    with patch.object(vision_client, "call_gemini_api", AsyncMock(return_value="The Apollo hospital bill was issued by Apollo Hospitals Chennai for a total of ₹1,25,450.00.")):
+    with patch.object(vision_client, "call_huggingface_api", AsyncMock(return_value="The Apollo hospital bill was issued by Apollo Hospitals Chennai for a total of ₹1,25,450.00.")):
         q4 = client.post("/api/query", json={"question": "Summarize this document", "document_ids": [doc1["id"]]})
         data4 = q4.json()
         assert len(data4["sources"]) == 1
@@ -161,7 +161,7 @@ async def test_all_six_formatting_and_scoping_cases():
         assert "Coffee" not in data4["answer"]
 
     # --- TEST 5: Multi-document single currency aggregation (Doc 1 + Doc 3 both in ₹) ---
-    with patch.object(vision_client, "call_gemini_api", AsyncMock(return_value="The total spending across your INR receipts is ₹1,25,950.00 (₹1,25,450.00 from Apollo Hospital and ₹500 from Cafe Coffee Day).")):
+    with patch.object(vision_client, "call_huggingface_api", AsyncMock(return_value="The total spending across your INR receipts is ₹1,25,950.00 (₹1,25,450.00 from Apollo Hospital and ₹500 from Cafe Coffee Day).")):
         q5 = client.post("/api/query", json={"question": "What is my total spending across INR receipts?", "document_ids": [doc1["id"], doc3["id"]]})
         data5 = q5.json()
         assert data5["computation"]["currency"] == "₹"
@@ -169,7 +169,7 @@ async def test_all_six_formatting_and_scoping_cases():
         assert "₹1,25,950.00" in data5["computation"]["explanation"]
 
     # --- TEST 6: Multi-document mixed currencies (Doc 1 in ₹, Doc 2 in $) ---
-    with patch.object(vision_client, "call_gemini_api", AsyncMock(return_value="Your receipts contain mixed currencies: ₹1,25,450.00 for the hospital bill and $1,250.75 for Apple Store. They are reported separately as they cannot be unified without conversion.")):
+    with patch.object(vision_client, "call_huggingface_api", AsyncMock(return_value="Your receipts contain mixed currencies: ₹1,25,450.00 for the hospital bill and $1,250.75 for Apple Store. They are reported separately as they cannot be unified without conversion.")):
         q6 = client.post("/api/query", json={"question": "What is the total combined cost across all receipts?", "document_ids": [doc1["id"], doc2["id"]]})
         data6 = q6.json()
         assert data6["computation"]["currency"] == "Mixed"

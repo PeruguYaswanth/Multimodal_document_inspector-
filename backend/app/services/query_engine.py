@@ -85,10 +85,13 @@ class QueryEngine:
         query = db.query(Document).filter(Document.is_non_informational == False)
         
         q_lower = request.question.lower()
-        if any(term in q_lower for term in ["all", "combined", "everything", "total", "across", "summary of documents"]):
+        is_explicit_all = any(term in q_lower for term in ["all documents", "combined", "everything", "across all", "entire collection", "summary of documents"])
+        is_math_aggregation = any(term in q_lower for term in ["average", "avg", "spent", "spending", "count", "how many", "total cost", "total amount"])
+
+        if is_explicit_all or is_math_aggregation or request.force_vision:
             return query.order_by(Document.uploaded_at.desc()).all()
 
-        stop_words = {"what", "is", "the", "are", "from", "selected", "image", "this", "that", "how", "much", "show", "tell", "picture", "photo"}
+        stop_words = {"what", "is", "the", "are", "from", "selected", "image", "this", "that", "how", "much", "show", "tell", "picture", "photo", "was", "were"}
         q_tokens = [w for w in re.split(r"\W+", q_lower) if len(w) > 2 and w not in stop_words]
         
         if q_tokens:
@@ -104,6 +107,7 @@ class QueryEngine:
             matched = query.filter(or_(*conditions)).all()
             if matched:
                 return matched
+            return []
 
         return query.order_by(Document.uploaded_at.desc()).limit(15).all()
 
@@ -230,7 +234,7 @@ class QueryEngine:
         1. Retrieve relevant records matching query tokens / document_ids
         2. Check if direct vision inspection is requested
         3. Perform code calculation if arithmetic requested
-        4. Synthesize grounded answer via Gemini
+        4. Synthesize grounded answer via Hugging Face
         """
         # Retrieval Stage with strict scoping
         try:
@@ -260,31 +264,15 @@ class QueryEngine:
             for doc in docs
         ]
 
-        # Check for direct vision request
-        q_lower = request.question.lower()
-        wants_visual = request.force_vision or any(
-            v_term in q_lower for v_term in ["what color", "what colour", "visual appearance", "visually look like", "visually inspect", "inspect the photo directly"]
-        )
-
-        if wants_visual and docs and docs[0].image_path:
-            target_doc = docs[0]
-            try:
-                visual_ans = await vision_client.query_vision_direct(target_doc.image_path, request.question)
-                return QueryResponse(
-                    question=request.question,
-                    answer=visual_ans,
-                    query_type="visual_inspection",
-                    sources=[sources[0]],
-                    visual_inspection_used=True
-                )
-            except Exception as e:
-                logger.warning(f"Direct vision inspection failed, attempting structured synthesis: {e}")
+        # Question Answering: Re-use cached structured extraction context without vision re-processing
+        logger.info(f"[QUERY] Using cached processed document(s) ({len(docs)} document(s) in scope)...")
+        logger.info("[QUERY] No vision processing required.")
 
         # Compute deterministic math if applicable
         math_details = cls.extract_numeric_aggregation(request.question, docs)
         math_dict = math_details.model_dump() if math_details else None
 
-        # Synthesize answer using Gemini with strictly scoped context records
+        # Synthesize answer using Hugging Face with strictly scoped context records
         context_data = [d.to_dict() for d in docs]
         
         try:
@@ -294,8 +282,31 @@ class QueryEngine:
                 math_result=math_dict
             )
             q_type = "code_computation" if math_details else "structured_reasoning"
+        except HTTPException:
+            raise
         except Exception as e:
-            logger.error(f"Synthesis stage failed: {e}")
+            from app.services.vision_client import AuthenticationError, ModelNotFoundError
+            if isinstance(e, AuthenticationError):
+                logger.error(f"Synthesis stage authentication error: {e}")
+                raise HTTPException(
+                    status_code=401,
+                    detail="Invalid or unauthorized Hugging Face token. Ensure your token at https://huggingface.co/settings/tokens has 'Make calls to Inference Providers' permission enabled."
+                )
+            if isinstance(e, ModelNotFoundError):
+                logger.error(f"Synthesis stage model error: {e}")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Hugging Face model is unavailable: {str(e)}"
+                )
+
+            err_str = str(e).lower()
+            if any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "aiserviceunavailable"]):
+                logger.error(f"Synthesis stage Hugging Face 503/429 unavailable: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="The AI service is temporarily busy. Please try again in a few seconds."
+                )
+            logger.error(f"Synthesis stage failed: {e}", exc_info=True)
             raise HTTPException(
                 status_code=500,
                 detail=f"Synthesis failed: {str(e)}"

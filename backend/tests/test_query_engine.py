@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from unittest.mock import AsyncMock, patch
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -88,10 +88,11 @@ async def test_average_and_count_math(populated_db):
         assert resp_avg.computation.result == 30.25
 
 @pytest.mark.asyncio
-async def test_visual_inspection_routing(populated_db):
+async def test_stored_context_query_routing(populated_db):
     req = QueryRequest(question="What does the dish shown in the photo look like?", force_vision=True)
-    with patch.object(vision_client, "query_vision_direct", AsyncMock(return_value="The photo displays a white porcelain bowl containing rice topped with mustard seeds and curry leaves.")):
+    with patch.object(vision_client, "generate_chat_answer", AsyncMock(return_value="The photo displays a white porcelain bowl containing rice topped with mustard seeds and curry leaves.")) as mock_chat:
         resp = await query_engine.process_query(populated_db, req)
-        assert resp.query_type == "visual_inspection"
-        assert resp.visual_inspection_used is True
+        assert resp.query_type == "structured_reasoning"
+        assert resp.visual_inspection_used is False
         assert "porcelain bowl" in resp.answer
+        mock_chat.assert_called_once()
