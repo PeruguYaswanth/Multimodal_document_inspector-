@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Q
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, or_
 
+import logging
 from app.database import get_db
 from app.config import settings
 from app.models import Document
@@ -15,6 +16,7 @@ from app.schemas import DocumentResponse, DocumentUpdateRequest, CollectionStats
 from app.services.image_processor import ImageProcessor
 from app.services.pipeline import pipeline
 
+logger = logging.getLogger("documents_router")
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 @router.post("/upload", response_model=List[DocumentResponse])
@@ -48,15 +50,28 @@ async def upload_documents(
         # Process and save with EXIF orientation correction
         meta = ImageProcessor.process_and_save(file_bytes, destination)
         
-        # Run Two-Stage Pipeline
-        doc, is_dup = await pipeline.process_image_two_stage(
-            image_path=meta["saved_path"],
-            original_filename=file.filename,
-            file_bytes=file_bytes,
-            db=db,
-            meta_info=meta
-        )
-        results.append(doc)
+        # Run Two-Stage Pipeline with graceful 503 handling
+        try:
+            doc, is_dup = await pipeline.process_image_two_stage(
+                image_path=meta["saved_path"],
+                original_filename=file.filename,
+                file_bytes=file_bytes,
+                db=db,
+                meta_info=meta
+            )
+            results.append(doc)
+        except HTTPException:
+            raise
+        except Exception as e:
+            err_str = str(e).lower()
+            if any(term in err_str for term in ["503", "unavailable", "high demand", "overloaded", "aiserviceunavailable"]):
+                logger.error(f"Gemini API 503 unavailable on upload: {e}")
+                raise HTTPException(
+                    status_code=503,
+                    detail="The AI service is temporarily unavailable. Please try again in a moment."
+                )
+            logger.error(f"Upload processing failed for {file.filename}: {e}", exc_info=True)
+            raise HTTPException(status_code=500, detail=f"Upload processing failed: {str(e)}")
 
     return results
 
@@ -197,12 +212,25 @@ async def reprocess_document(doc_id: int, db: Session = Depends(get_db)):
     with open(doc.image_path, "rb") as f:
         file_bytes = f.read()
 
-    # Re-run pipeline
-    reprocessed, _ = await pipeline.process_image_two_stage(
-        image_path=doc.image_path,
-        original_filename=doc.original_filename,
-        file_bytes=file_bytes,
-        db=db,
-        meta_info=doc.meta_info
-    )
-    return reprocessed
+    # Re-run pipeline with graceful 503 handling
+    try:
+        reprocessed, _ = await pipeline.process_image_two_stage(
+            image_path=doc.image_path,
+            original_filename=doc.original_filename,
+            file_bytes=file_bytes,
+            db=db,
+            meta_info=doc.meta_info
+        )
+        return reprocessed
+    except HTTPException:
+        raise
+    except Exception as e:
+        err_str = str(e).lower()
+        if any(term in err_str for term in ["503", "unavailable", "high demand", "overloaded", "aiserviceunavailable"]):
+            logger.error(f"Gemini API 503 unavailable on reprocess: {e}")
+            raise HTTPException(
+                status_code=503,
+                detail="The AI service is temporarily unavailable. Please try again in a moment."
+            )
+        logger.error(f"Reprocessing failed for document {doc_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Reprocessing failed: {str(e)}")

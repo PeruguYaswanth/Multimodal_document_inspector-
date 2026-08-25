@@ -13,13 +13,44 @@ from app.services.image_processor import ImageProcessor
 
 logger = logging.getLogger("vision_client")
 
+class AIServiceUnavailableError(Exception):
+    """Raised when Gemini API is temporarily unavailable (503 / 429) after all retries."""
+    pass
+
+def is_transient_error(e: Exception) -> bool:
+    """
+    Determines if an error is transient/temporary (503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED,
+    network drop) suitable for exponential backoff retries.
+    Permanent errors (400, 401, 403, 404) are NOT retried.
+    """
+    from google.genai import errors
+    if isinstance(e, errors.ServerError):
+        return True
+    if isinstance(e, errors.ClientError):
+        if getattr(e, "code", None) == 429:
+            return True
+        err_msg = str(e).lower()
+        if "resource_exhausted" in err_msg or "too many requests" in err_msg:
+            return True
+        return False
+    if isinstance(e, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+        return True
+
+    err_str = str(e).lower()
+    transient_indicators = [
+        "503", "unavailable", "high demand", "spikes in demand",
+        "try again later", "overloaded", "resource_exhausted",
+        "rate limit", "429", "timeout", "connection reset", "502", "504"
+    ]
+    return any(indicator in err_str for indicator in transient_indicators)
+
 class VisionClient:
     def __init__(self):
         self.model = settings.GEMINI_MODEL
 
     def get_client(self) -> Optional[genai.Client]:
         """Dynamically retrieves an initialized Google Gen AI client from settings/env."""
-        api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
+        api_key = settings.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "") or os.getenv("GOOGLE_API_KEY", "")
         if api_key and api_key.strip():
             return genai.Client(api_key=api_key.strip())
         return None
@@ -52,18 +83,18 @@ class VisionClient:
         image_path: Optional[str] = None,
         image_bytes: Optional[bytes] = None,
         mime_type: Optional[str] = None,
-        max_retries: int = 2,
+        max_retries: Optional[int] = None,
         **kwargs
     ) -> str:
         """
         Consolidated wrapper function for all Google Gemini API calls.
-        Supports multimodal inputs (images, parts, base64 data, text),
-        system instructions, structured generation config, and retry logic.
+        Supports multimodal inputs, system instructions, structured generation config,
+        exponential backoff retry for 503 UNAVAILABLE / 429 errors, and fallback model support.
         """
         client = self.get_client()
         if not client:
             raise RuntimeError(
-                "Gemini API key is not configured. Please set GEMINI_API_KEY in "
+                "Gemini API key is not configured. Please set GEMINI_API_KEY or GOOGLE_API_KEY in "
                 "the environment or backend/.env file to perform live multimodal image analysis."
             )
 
@@ -89,7 +120,7 @@ class VisionClient:
             if prompt:
                 gemini_contents.append(prompt if isinstance(prompt, str) else str(prompt))
 
-        # 3. Parse prompt or messages structure (handles text, parts, or legacy Anthropic dicts)
+        # 3. Parse prompt or messages structure
         else:
             raw_input = prompt if prompt is not None else messages
             if raw_input is None:
@@ -102,7 +133,6 @@ class VisionClient:
                     if isinstance(item, str):
                         gemini_contents.append(item)
                     elif isinstance(item, dict):
-                        # Convert Anthropic-style message dicts
                         if item.get("role") == "user" and isinstance(item.get("content"), list):
                             for sub in item["content"]:
                                 if isinstance(sub, dict) and sub.get("type") == "image":
@@ -136,9 +166,10 @@ class VisionClient:
         )
 
         active_model = model or self.model
-
+        retries_limit = max_retries if max_retries is not None else settings.GEMINI_MAX_RETRIES
         last_err = None
-        for attempt in range(max_retries + 1):
+
+        for attempt in range(retries_limit + 1):
             try:
                 def _do_call():
                     return client.models.generate_content(
@@ -151,15 +182,36 @@ class VisionClient:
                 return response.text
             except Exception as e:
                 last_err = e
+                # Check if error is transient
+                if not is_transient_error(e):
+                    logger.error(f"Permanent Gemini API failure (model={active_model}): {e}")
+                    raise e
+
                 logger.warning(
-                    f"Gemini API attempt {attempt + 1} failed: {e} "
-                    f"(model={active_model}, temp={temperature}, max_tokens={max_tokens})"
+                    f"Gemini API transient failure on attempt {attempt + 1}/{retries_limit + 1}: {e} "
+                    f"(model={active_model})"
                 )
-                if attempt < max_retries:
-                    backoff = (2 ** attempt) * 1.5
-                    await asyncio.sleep(backoff)
+
+                # Attempt model fallback if primary model is experiencing 503 / high demand
+                if active_model != settings.GEMINI_FALLBACK_MODEL and attempt >= 1:
+                    logger.info(
+                        f"Switching from '{active_model}' to fallback model '{settings.GEMINI_FALLBACK_MODEL}'"
+                    )
+                    active_model = settings.GEMINI_FALLBACK_MODEL
+
+                if attempt < retries_limit:
+                    # Exponential backoff: ~2s on attempt 0, ~4s on attempt 1, ~8s on attempt 2
+                    delay = settings.GEMINI_RETRY_DELAY * (2 ** attempt)
+                    logger.info(f"Retrying Gemini call in {delay:.1f}s...")
+                    await asyncio.sleep(delay)
                 else:
-                    raise last_err
+                    logger.error(
+                        f"Gemini API remained unavailable after {retries_limit + 1} attempts: {last_err}",
+                        exc_info=True
+                    )
+                    raise AIServiceUnavailableError(
+                        "The AI service is temporarily unavailable. Please try again in a moment."
+                    ) from last_err
 
     # Backward compatibility aliases
     async def call_claude_api(self, *args, **kwargs) -> str:
