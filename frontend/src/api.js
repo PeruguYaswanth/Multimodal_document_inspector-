@@ -1,8 +1,8 @@
 const RAW_URL = (import.meta.env.VITE_API_URL || "").trim().replace(/\/+$/, "");
 const BACKEND_BASE = RAW_URL.endsWith("/api") ? RAW_URL.slice(0, -4) : RAW_URL;
 
-export const API_BASE = `${BACKEND_BASE}/api`;
-export const UPLOADS_BASE = `${BACKEND_BASE}/uploads`;
+export const API_BASE = BACKEND_BASE ? `${BACKEND_BASE}/api` : "/api";
+export const UPLOADS_BASE = BACKEND_BASE ? `${BACKEND_BASE}/uploads` : "/uploads";
 
 export function getImageUrl(imagePath) {
   if (!imagePath) return "";

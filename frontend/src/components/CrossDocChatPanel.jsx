@@ -77,13 +77,20 @@ export default function CrossDocChatPanel({ documents, onSelectDocForReview }) {
 
       setMessages(prev => [...prev, assistantMsg]);
     } catch (err) {
+      const errMsg = err.message || "";
+      const isBusy = errMsg.includes("503") || errMsg.includes("busy") || errMsg.includes("temporarily");
+      const displayText = isBusy 
+        ? "AI service is temporarily busy. Please try again in a few seconds." 
+        : `Unable to complete query: ${errMsg}`;
+
       setMessages(prev => [
         ...prev,
         {
           id: (Date.now() + 1).toString(),
           sender: "assistant",
-          text: "I encountered an error answering your question: " + err.message,
+          text: displayText,
           query_type: "error",
+          failedPrompt: textToSend,
           sources: []
         }
       ]);
@@ -170,6 +177,19 @@ export default function CrossDocChatPanel({ documents, onSelectDocForReview }) {
               <div className="whitespace-pre-line text-slate-200">
                 {msg.text}
               </div>
+
+              {msg.query_type === "error" && msg.failedPrompt && (
+                <div className="mt-2.5 pt-2 border-t border-rose-500/20">
+                  <button
+                    onClick={() => handleSendMessage(msg.failedPrompt)}
+                    disabled={isLoading}
+                    className="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 text-xs font-semibold border border-rose-500/30 transition-colors disabled:opacity-50 cursor-pointer"
+                  >
+                    <RefreshCw className="w-3 h-3 text-rose-400" />
+                    <span>Retry Question</span>
+                  </button>
+                </div>
+              )}
 
             </div>
           </div>
