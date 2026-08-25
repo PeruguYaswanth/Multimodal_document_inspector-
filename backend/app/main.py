@@ -47,6 +47,17 @@ app.include_router(documents.router, prefix=settings.API_PREFIX)
 app.include_router(query.router, prefix=settings.API_PREFIX)
 app.include_router(sample_data.router, prefix=settings.API_PREFIX)
 
+@app.get("/")
+def root():
+    return {
+        "status": "healthy",
+        "service": settings.PROJECT_NAME,
+        "version": settings.VERSION,
+        "docs": "/docs",
+        "health": "/api/health"
+    }
+
+@app.get("/health")
 @app.get("/api/health")
 def health_check():
     return {

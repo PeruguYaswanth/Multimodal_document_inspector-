@@ -18,7 +18,7 @@ import {
 } from "lucide-react";
 import DocumentTypeBadge from "./DocumentTypeBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
-import { updateDocument, reprocessDocument } from "../api";
+import { updateDocument, reprocessDocument, getImageUrl } from "../api";
 
 export default function DocumentReviewModal({ document: initialDoc, onClose, onSaveSuccess }) {
   const [doc, setDoc] = useState(initialDoc);
@@ -54,8 +54,7 @@ export default function DocumentReviewModal({ document: initialDoc, onClose, onS
 
   if (!doc) return null;
 
-  const imageFileName = (doc.image_path || "").split(/[\\/]/).pop();
-  const imageUrl = `/uploads/${imageFileName}`;
+  const imageUrl = getImageUrl(doc.image_path);
 
   const handleFieldChange = (key, value) => {
     setFields(prev => ({ ...prev, [key]: value }));

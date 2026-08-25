@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo } from "react";
+import React, { useState, useMemo } from "react";
 import { 
   Search, 
   Filter, 
@@ -13,6 +13,7 @@ import {
 import DocumentCard from "./DocumentCard";
 import DocumentTypeBadge from "./DocumentTypeBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
+import { getImageUrl } from "../api";
 
 export default function DocumentGallery({
   documents,
@@ -262,7 +263,7 @@ export default function DocumentGallery({
                     <tr key={doc.id} className="hover:bg-slate-800/40 transition-colors">
                       <td className="p-3.5 flex items-center gap-3">
                         <img
-                          src={`/uploads/${imageFileName}`}
+                          src={getImageUrl(doc.image_path)}
                           alt={doc.original_filename}
                           className="w-10 h-10 object-cover rounded-lg bg-slate-950 border border-slate-800 flex-shrink-0"
                           onError={(e) => { e.target.style.display = 'none'; }}

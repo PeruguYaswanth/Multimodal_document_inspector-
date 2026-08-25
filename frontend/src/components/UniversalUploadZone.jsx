@@ -11,7 +11,7 @@ import {
   Layers,
   ArrowRight
 } from "lucide-react";
-import { uploadImages } from "../api";
+import { uploadImages, getImageUrl } from "../api";
 import DocumentTypeBadge from "./DocumentTypeBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
 
@@ -234,7 +234,7 @@ export default function UniversalUploadZone({ onUploadComplete, onSelectDocForRe
               >
                 <div className="w-20 h-24 rounded-lg bg-slate-900 overflow-hidden flex-shrink-0 border border-slate-800">
                   <img
-                    src={`/uploads/${doc.image_path.split(/[\\/]/).pop()}`}
+                    src={getImageUrl(doc.image_path)}
                     alt={doc.original_filename}
                     className="w-full h-full object-cover"
                     onError={(e) => { e.target.style.display = 'none'; }}

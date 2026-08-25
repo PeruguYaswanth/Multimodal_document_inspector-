@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import DocumentTypeBadge from "./DocumentTypeBadge";
 import ConfidenceBadge from "./ConfidenceBadge";
+import { getImageUrl } from "../api";
 
 export default function DocumentCard({ 
   document, 
@@ -21,8 +22,7 @@ export default function DocumentCard({
   onReprocess 
 }) {
   const filename = document.original_filename || "Document";
-  const imageFileName = (document.image_path || "").split(/[\\/]/).pop();
-  const imageUrl = `/uploads/${imageFileName}`;
+  const imageUrl = getImageUrl(document.image_path);
   
   const extractedKeys = Object.keys(document.extracted_fields || {});
   const hasTables = (document.tables || []).length > 0;
