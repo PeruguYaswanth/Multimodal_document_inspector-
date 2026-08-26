@@ -72,15 +72,15 @@ async def upload_documents(
             raise
         except (AIServiceUnavailableError, Exception) as e:
             if isinstance(e, AuthenticationError):
-                logger.error(f"Hugging Face auth failure on upload: {e}")
-                raise HTTPException(status_code=401, detail="Hugging Face authentication failed.")
+                logger.error(f"[LLM] OpenRouter authentication failed on upload: {e}")
+                raise HTTPException(status_code=401, detail="OpenRouter authentication failed. Check OPENROUTER_API_KEY.")
             if isinstance(e, ModelNotFoundError):
-                logger.error(f"Hugging Face model not found on upload: {e}")
-                raise HTTPException(status_code=404, detail="Hugging Face model is unavailable.")
+                logger.error(f"[LLM] OpenRouter model not found on upload: {e}")
+                raise HTTPException(status_code=404, detail="OpenRouter model is unavailable.")
             
             err_str = str(e).lower()
             if isinstance(e, AIServiceUnavailableError) or any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "temporarily busy", "aiserviceunavailable"]):
-                logger.error(f"Hugging Face API 503/429 unavailable on upload: {e}")
+                logger.error(f"[LLM] OpenRouter API 503/429 unavailable on upload: {e}")
                 raise HTTPException(
                     status_code=503,
                     detail="The AI service is temporarily busy. Please try again in a few seconds."
@@ -245,15 +245,15 @@ async def reprocess_document(doc_id: int, db: Session = Depends(get_db)):
         raise
     except (AIServiceUnavailableError, Exception) as e:
         if isinstance(e, AuthenticationError):
-            logger.error(f"Hugging Face auth failure on reprocess: {e}")
-            raise HTTPException(status_code=401, detail=f"Hugging Face authentication failed: {str(e)}")
+            logger.error(f"[LLM] OpenRouter authentication failed on reprocess: {e}")
+            raise HTTPException(status_code=401, detail=f"OpenRouter authentication failed: {str(e)}")
         if isinstance(e, ModelNotFoundError):
-            logger.error(f"Hugging Face model not found on reprocess: {e}")
-            raise HTTPException(status_code=404, detail=f"Hugging Face model is unavailable: {str(e)}")
+            logger.error(f"[LLM] OpenRouter model not found on reprocess: {e}")
+            raise HTTPException(status_code=404, detail=f"OpenRouter model is unavailable: {str(e)}")
 
         err_str = str(e).lower()
         if isinstance(e, AIServiceUnavailableError) or any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "temporarily busy", "aiserviceunavailable"]):
-            logger.error(f"Hugging Face API 503/429 unavailable on reprocess: {e}")
+            logger.error(f"[LLM] OpenRouter API 503/429 unavailable on reprocess: {e}")
             raise HTTPException(
                 status_code=503,
                 detail="The AI service is temporarily busy. Please try again in a few seconds."

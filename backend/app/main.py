@@ -20,11 +20,11 @@ Base.metadata.create_all(bind=engine)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup tasks
-    hf_token_configured = bool(settings.HF_TOKEN and settings.HF_TOKEN.strip())
+    or_configured = bool(settings.OPENROUTER_API_KEY and settings.OPENROUTER_API_KEY.strip())
     print(f"[STARTUP] Starting {settings.PROJECT_NAME} v{settings.VERSION}")
-    print("[STARTUP] Provider: Hugging Face")
-    print(f"[STARTUP] HF token configured: {hf_token_configured}")
-    print(f"[STARTUP] HF model: {settings.HF_MODEL}")
+    print("[STARTUP] Provider: OpenRouter")
+    print(f"[STARTUP] OpenRouter API key configured: {or_configured}")
+    print(f"[STARTUP] OpenRouter model: {settings.OPENROUTER_MODEL}")
     yield
     print("[SHUTDOWN] Stopping document analyzer backend")
 
@@ -41,6 +41,9 @@ app.add_middleware(
         "https://frontend-seven-indol-89.vercel.app",
         "http://localhost:5173",
         "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:3000",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -72,9 +75,10 @@ def health_check():
         "status": "healthy",
         "service": settings.PROJECT_NAME,
         "version": settings.VERSION,
-        "ai_provider": "huggingface",
-        "model": settings.HF_MODEL,
-        "hf_configured": bool(settings.HF_TOKEN),
+        "ai_provider": "openrouter",
+        "model": settings.OPENROUTER_MODEL,
+        "openrouter_configured": bool(settings.OPENROUTER_API_KEY),
+        "openai_configured": bool(settings.OPENROUTER_API_KEY),
         "anthropic_configured": bool(settings.ANTHROPIC_API_KEY)
     }
 

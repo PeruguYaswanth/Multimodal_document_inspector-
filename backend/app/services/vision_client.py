@@ -6,14 +6,16 @@ import asyncio
 import logging
 from typing import Dict, Any, Optional, List, Union
 from PIL import Image
-from huggingface_hub import InferenceClient
-from huggingface_hub.errors import (
-    HfHubHTTPError,
-    OverloadedError,
-    InferenceTimeoutError,
-    RepositoryNotFoundError,
-    GatedRepoError,
-    BadRequestError
+from openai import (
+    OpenAI,
+    AuthenticationError as OpenAIAuthenticationError,
+    PermissionDeniedError,
+    NotFoundError as OpenAINotFoundError,
+    RateLimitError,
+    InternalServerError,
+    APITimeoutError,
+    APIConnectionError,
+    APIError
 )
 from app.config import settings
 from app.services.image_processor import ImageProcessor
@@ -21,35 +23,34 @@ from app.services.image_processor import ImageProcessor
 logger = logging.getLogger("vision_client")
 
 class AIServiceUnavailableError(Exception):
-    """Raised when Hugging Face API is temporarily unavailable (503 / 502 / 429) after all retries."""
+    """Raised when OpenAI API is temporarily unavailable (503 / 502 / 429) after all retries."""
     pass
 
 class AuthenticationError(Exception):
-    """Raised when Hugging Face token is invalid or unauthorized."""
+    """Raised when OpenAI API key is invalid, missing, or unauthorized."""
     pass
 
 class ModelNotFoundError(Exception):
-    """Raised when the requested Hugging Face model is not found or inaccessible."""
+    """Raised when the requested OpenAI model is not found or inaccessible."""
     pass
 
 def is_transient_error(e: Exception) -> bool:
     """
-    Determines if an error is transient/temporary (429 rate limit, 502/503/504 server overload,
+    Determines if an error is transient/temporary (429 rate limit, 500/502/503/504 server overload,
     timeout, network drop) suitable for exponential backoff retries.
     Permanent errors (400, 401, 403, 404) are NOT retried.
     """
-    if isinstance(e, (OverloadedError, InferenceTimeoutError)):
+    if isinstance(e, (RateLimitError, InternalServerError, APITimeoutError, APIConnectionError, TimeoutError, ConnectionError)):
         return True
 
-    if isinstance(e, HfHubHTTPError):
-        status_code = getattr(getattr(e, "response", None), "status_code", None)
-        if status_code in (429, 500, 502, 503, 504):
-            return True
-        if status_code in (400, 401, 403, 404):
-            return False
+    if isinstance(e, (OpenAIAuthenticationError, OpenAINotFoundError, PermissionDeniedError)):
+        return False
 
-    if isinstance(e, (ConnectionError, TimeoutError, asyncio.TimeoutError)):
+    status_code = getattr(e, "status_code", None)
+    if status_code in (429, 500, 502, 503, 504):
         return True
+    if status_code in (400, 401, 403, 404):
+        return False
 
     err_str = str(e).lower()
     transient_indicators = [
@@ -61,19 +62,26 @@ def is_transient_error(e: Exception) -> bool:
 
 class VisionClient:
     def __init__(self):
-        self.model = settings.HF_MODEL
+        self.model = settings.OPENROUTER_MODEL
 
-    def get_client(self) -> Optional[InferenceClient]:
-        """Dynamically retrieves an initialized Hugging Face InferenceClient from settings/env."""
-        token = (
-            settings.HF_TOKEN
-            or os.getenv("HF_TOKEN", "")
-            or os.getenv("HF_API_KEY", "")
-            or os.getenv("HUGGINGFACEHUB_API_TOKEN", "")
-            or os.getenv("HUGGING_FACE_HUB_TOKEN", "")
+    def get_client(self) -> Optional[OpenAI]:
+        """Dynamically retrieves an initialized OpenRouter/OpenAI client from settings/env."""
+        api_key = (
+            settings.OPENROUTER_API_KEY
+            or os.getenv("OPENROUTER_API_KEY", "")
+            or settings.OPENAI_API_KEY
+            or os.getenv("OPENAI_API_KEY", "")
         )
-        if token and token.strip():
-            return InferenceClient(token=token.strip())
+        if api_key and api_key.strip():
+            base_url = settings.OPENROUTER_BASE_URL or os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+            return OpenAI(
+                api_key=api_key.strip(),
+                base_url=base_url,
+                default_headers={
+                    "HTTP-Referer": "http://localhost:5174",
+                    "X-Title": "Multimodal Document Inspector"
+                }
+            )
         return None
 
     @staticmethod
@@ -91,7 +99,7 @@ class VisionClient:
             text = text[start_idx:end_idx + 1]
         return text
 
-    async def call_huggingface_api(
+    async def call_openai_api(
         self,
         prompt: Optional[Union[str, List[Any]]] = None,
         messages: Optional[Union[List[Any], str]] = None,
@@ -108,23 +116,23 @@ class VisionClient:
         **kwargs
     ) -> str:
         """
-        Consolidated wrapper function for Hugging Face Multimodal Vision-Language API calls.
+        Consolidated wrapper function for OpenRouter / OpenAI Multimodal and Chat API calls.
         Supports multimodal inputs (image data URLs + text prompts), system instructions,
         exponential backoff retry for 503/429/502 errors, and model fallback.
         """
         client = self.get_client()
         if not client:
             raise AuthenticationError(
-                "Hugging Face token is not configured. Please set HF_TOKEN in "
-                "the environment or backend/.env file to perform live multimodal image analysis."
+                "OpenRouter API key is not configured. Please set OPENROUTER_API_KEY in "
+                "the environment or backend/.env file to perform multimodal image and text analysis."
             )
 
-        hf_messages: List[Dict[str, Any]] = []
+        openai_messages: List[Dict[str, Any]] = []
 
         # 1. System instruction
         sys_val = system or system_prompt
         if sys_val:
-            hf_messages.append({"role": "system", "content": sys_val})
+            openai_messages.append({"role": "system", "content": sys_val})
 
         # 2. Multimodal User Content
         user_content_parts: List[Dict[str, Any]] = []
@@ -155,7 +163,6 @@ class VisionClient:
             if isinstance(messages, str):
                 raw_text = messages
             elif isinstance(messages, list):
-                # Extract text and images from legacy message list structures
                 for item in messages:
                     if isinstance(item, str):
                         raw_text += ("\n" + item) if raw_text else item
@@ -189,10 +196,10 @@ class VisionClient:
             user_content_parts.append({"type": "text", "text": raw_text})
 
         if user_content_parts:
-            hf_messages.append({"role": "user", "content": user_content_parts})
+            openai_messages.append({"role": "user", "content": user_content_parts})
 
         active_model = model or self.model
-        retries_limit = max_retries if max_retries is not None else settings.HF_MAX_RETRIES
+        retries_limit = max_retries if max_retries is not None else settings.OPENAI_MAX_RETRIES
         last_err = None
 
         for attempt in range(retries_limit + 1):
@@ -200,9 +207,9 @@ class VisionClient:
                 def _do_call():
                     return client.chat.completions.create(
                         model=active_model,
-                        messages=hf_messages,
+                        messages=openai_messages,
                         max_tokens=max_tokens,
-                        temperature=temperature if temperature > 0 else None,
+                        temperature=temperature if temperature > 0 else 0.0,
                     )
 
                 response = await asyncio.to_thread(_do_call)
@@ -211,44 +218,39 @@ class VisionClient:
                 last_err = e
 
                 # Check for permanent authentication or model errors
-                if isinstance(e, HfHubHTTPError):
-                    status_code = getattr(getattr(e, "response", None), "status_code", None)
-                    if status_code in (401, 403):
-                        logger.error(f"Hugging Face authentication/permission error: {e}")
-                        raise AuthenticationError(
-                            "Invalid or unauthorized Hugging Face token. Ensure your token at https://huggingface.co/settings/tokens has 'Make calls to Inference Providers' permission enabled."
-                        ) from e
-                    elif status_code == 404:
-                        logger.error(f"Hugging Face model '{active_model}' not found: {e}")
-                        raise ModelNotFoundError(f"Hugging Face model '{active_model}' is unavailable.") from e
+                if isinstance(e, (OpenAIAuthenticationError, PermissionDeniedError)):
+                    logger.error(f"OpenAI authentication/permission error: {e}")
+                    raise AuthenticationError(
+                        "Invalid or unauthorized OpenAI API key. Ensure your OPENAI_API_KEY is set and valid."
+                    ) from e
 
-                if isinstance(e, (RepositoryNotFoundError, GatedRepoError)):
-                    logger.error(f"Hugging Face model repository error: {e}")
-                    raise ModelNotFoundError(f"Hugging Face model '{active_model}' is unavailable.") from e
+                if isinstance(e, OpenAINotFoundError):
+                    logger.error(f"OpenAI model '{active_model}' not found: {e}")
+                    raise ModelNotFoundError(f"OpenAI model '{active_model}' is unavailable.") from e
 
                 if not is_transient_error(e):
-                    logger.error(f"Permanent Hugging Face API failure (model={active_model}): {e}")
+                    logger.error(f"Permanent OpenAI API failure (model={active_model}): {e}")
                     raise e
 
                 logger.warning(
-                    f"Hugging Face API transient failure on attempt {attempt + 1}/{retries_limit + 1}: {e} "
+                    f"OpenAI API transient failure on attempt {attempt + 1}/{retries_limit + 1}: {e} "
                     f"(model={active_model})"
                 )
 
                 # Attempt model fallback on consecutive transient failure
-                if active_model != settings.HF_FALLBACK_MODEL and attempt >= 1:
+                if active_model != settings.OPENAI_FALLBACK_MODEL and attempt >= 1:
                     logger.info(
-                        f"Switching from '{active_model}' to fallback model '{settings.HF_FALLBACK_MODEL}'"
+                        f"Switching from '{active_model}' to fallback model '{settings.OPENAI_FALLBACK_MODEL}'"
                     )
-                    active_model = settings.HF_FALLBACK_MODEL
+                    active_model = settings.OPENAI_FALLBACK_MODEL
 
                 if attempt < retries_limit:
-                    delay = settings.HF_RETRY_DELAY * (2 ** attempt)
-                    logger.info(f"Retrying Hugging Face call in {delay:.1f}s...")
+                    delay = settings.OPENAI_RETRY_DELAY * (2 ** attempt)
+                    logger.info(f"Retrying OpenAI call in {delay:.1f}s...")
                     await asyncio.sleep(delay)
                 else:
                     logger.error(
-                        f"Hugging Face API remained unavailable after {retries_limit + 1} attempts: {last_err}",
+                        f"OpenAI API remained unavailable after {retries_limit + 1} attempts: {last_err}",
                         exc_info=True
                     )
                     raise AIServiceUnavailableError(
@@ -256,23 +258,29 @@ class VisionClient:
                     ) from last_err
 
     # Backward compatibility aliases
+    async def call_openrouter_api(self, *args, **kwargs) -> str:
+        return await self.call_openai_api(*args, **kwargs)
+
+    async def call_huggingface_api(self, *args, **kwargs) -> str:
+        return await self.call_openai_api(*args, **kwargs)
+
     async def call_gemini_api(self, *args, **kwargs) -> str:
-        return await self.call_huggingface_api(*args, **kwargs)
+        return await self.call_openai_api(*args, **kwargs)
 
     async def call_claude_api(self, *args, **kwargs) -> str:
-        return await self.call_huggingface_api(*args, **kwargs)
+        return await self.call_openai_api(*args, **kwargs)
 
     async def call_claude(self, *args, **kwargs) -> str:
-        return await self.call_huggingface_api(*args, **kwargs)
+        return await self.call_openai_api(*args, **kwargs)
 
     async def _call_claude_with_retry(self, *args, **kwargs) -> str:
-        return await self.call_huggingface_api(*args, **kwargs)
+        return await self.call_openai_api(*args, **kwargs)
 
     async def classify_image(self, image_path: str) -> Dict[str, Any]:
         """
-        Stage 1A: Dynamic Image & Document Classification via Hugging Face Vision-Language Model.
+        Stage 1A: Dynamic Image & Document Classification via OpenAI Vision-Language Model.
         """
-        logger.info(f"[VISION] Processing image with Qwen... (Stage 1A Classification: {image_path})")
+        logger.info(f"[VISION] Processing image with OpenAI... (Stage 1A Classification: {image_path})")
         prompt = (
             "Analyze the attached image and identify what kind of image/document/subject it represents. "
             "It can be ANY category (e.g. food dish, receipt, invoice, handwritten note, ID card, medical record, "
@@ -296,7 +304,7 @@ class VisionClient:
             "Never wrap in markdown fences. Return ONLY the raw JSON object."
         )
 
-        raw_text = await self.call_huggingface_api(
+        raw_text = await self.call_openai_api(
             image_path=image_path,
             prompt=prompt,
             temperature=0.0
@@ -312,9 +320,9 @@ class VisionClient:
         key_fields: List[str]
     ) -> Dict[str, Any]:
         """
-        Stage 1B: Dynamic Attribute Extraction via Hugging Face Vision-Language Model.
+        Stage 1B: Dynamic Attribute Extraction via OpenAI Vision-Language Model.
         """
-        logger.info(f"[VISION] Processing image with Qwen... (Stage 1B Extraction: '{primary_subject or document_type}')")
+        logger.info(f"[VISION] Processing image with OpenAI... (Stage 1B Extraction: '{primary_subject or document_type}')")
         fields_str = ", ".join(key_fields) if key_fields else "salient visual and textual details"
 
         prompt = (
@@ -345,7 +353,7 @@ class VisionClient:
             "- Return ONLY valid raw JSON with no markdown formatting."
         )
 
-        raw_text = await self.call_huggingface_api(
+        raw_text = await self.call_openai_api(
             image_path=image_path,
             prompt=prompt,
             temperature=0.0
@@ -355,7 +363,7 @@ class VisionClient:
 
     async def query_vision_direct(self, image_path: str, question: str) -> str:
         """
-        Direct Image Vision Query: Re-inspects the raw image with Hugging Face Vision.
+        Direct Image Vision Query: Re-inspects the raw image with OpenAI Vision.
         """
         prompt = (
             f"You are inspecting the attached image directly to answer the following user question.\n"
@@ -363,7 +371,7 @@ class VisionClient:
             f"Provide a clear, grounded, and concise answer directly based on what is visible in the image."
         )
 
-        return await self.call_huggingface_api(
+        return await self.call_openai_api(
             image_path=image_path,
             prompt=prompt,
             temperature=0.2
@@ -376,7 +384,7 @@ class VisionClient:
         math_result: Optional[Dict[str, Any]] = None
     ) -> str:
         """
-        Stage 2 Synthesis: Answers the user's natural language question grounded in extracted records.
+        Stage 2 Synthesis: Answers the user's natural language question grounded in extracted records using OpenAI.
         """
         system_prompt = (
             "You are a multimodal document and image intelligence assistant.\n"
@@ -397,7 +405,7 @@ class VisionClient:
         user_content += f"DOCUMENT CONTEXT RECORDS:\n{json.dumps(context_data, indent=2)}\n\n"
         user_content += "Provide ONLY the direct, concise answer to the question based on the records above."
 
-        return await self.call_huggingface_api(
+        return await self.call_openai_api(
             prompt=user_content,
             system=system_prompt,
             temperature=0.0

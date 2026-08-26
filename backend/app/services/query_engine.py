@@ -272,7 +272,7 @@ class QueryEngine:
         math_details = cls.extract_numeric_aggregation(request.question, docs)
         math_dict = math_details.model_dump() if math_details else None
 
-        # Synthesize answer using Hugging Face with strictly scoped context records
+        # Synthesize answer using OpenAI with strictly scoped context records
         context_data = [d.to_dict() for d in docs]
         
         try:
@@ -287,21 +287,21 @@ class QueryEngine:
         except Exception as e:
             from app.services.vision_client import AuthenticationError, ModelNotFoundError
             if isinstance(e, AuthenticationError):
-                logger.error(f"Synthesis stage authentication error: {e}")
+                logger.error(f"[LLM] OpenRouter authentication failed in synthesis: {e}")
                 raise HTTPException(
                     status_code=401,
-                    detail="Invalid or unauthorized Hugging Face token. Ensure your token at https://huggingface.co/settings/tokens has 'Make calls to Inference Providers' permission enabled."
+                    detail="Invalid or unauthorized OpenRouter API key. Check OPENROUTER_API_KEY."
                 )
             if isinstance(e, ModelNotFoundError):
-                logger.error(f"Synthesis stage model error: {e}")
+                logger.error(f"[LLM] OpenRouter model not found in synthesis: {e}")
                 raise HTTPException(
                     status_code=404,
-                    detail=f"Hugging Face model is unavailable: {str(e)}"
+                    detail=f"OpenRouter model is unavailable: {str(e)}"
                 )
 
             err_str = str(e).lower()
             if any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "aiserviceunavailable"]):
-                logger.error(f"Synthesis stage Hugging Face 503/429 unavailable: {e}")
+                logger.error(f"[LLM] OpenRouter 503/429 unavailable in synthesis: {e}")
                 raise HTTPException(
                     status_code=503,
                     detail="The AI service is temporarily busy. Please try again in a few seconds."

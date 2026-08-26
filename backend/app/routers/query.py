@@ -23,7 +23,7 @@ async def ask_question(
     Routes queries to:
     - Pure Python deterministic math computation for arithmetic (sums, counts, avgs)
     - Direct image visual inspection fallback for visual details
-    - Structured Hugging Face Multimodal reasoning over extracted JSON documents
+    - Structured OpenRouter / OpenAI Multimodal reasoning over extracted JSON documents
     """
     if not request.question or not request.question.strip():
         raise HTTPException(status_code=422, detail="Question field cannot be empty.")
@@ -36,14 +36,16 @@ async def ask_question(
     except Exception as e:
         logger.error(f"Unhandled error processing query '{request.question}': {e}", exc_info=True)
         if isinstance(e, AuthenticationError):
+            logger.error(f"[LLM] OpenRouter authentication failed: {e}")
             raise HTTPException(
                 status_code=401,
-                detail=f"Hugging Face authentication failed: {str(e)}"
+                detail=f"OpenRouter authentication failed: {str(e)}"
             )
         if isinstance(e, ModelNotFoundError):
+            logger.error(f"[LLM] OpenRouter model not found: {e}")
             raise HTTPException(
                 status_code=404,
-                detail=f"Hugging Face model is unavailable: {str(e)}"
+                detail=f"OpenRouter model is unavailable: {str(e)}"
             )
         err_str = str(e).lower()
         if any(term in err_str for term in ["503", "502", "504", "429", "unavailable", "overloaded", "aiserviceunavailable"]):

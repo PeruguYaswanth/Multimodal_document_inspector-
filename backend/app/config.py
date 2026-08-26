@@ -9,18 +9,30 @@ class Settings(BaseSettings):
     VERSION: str = "1.0.0"
     API_PREFIX: str = "/api"
     
-    # LLM Settings (Hugging Face Multimodal Vision-Language API)
-    HF_TOKEN: str = (
-        os.getenv("HF_TOKEN")
-        or os.getenv("HF_API_KEY")
-        or os.getenv("HUGGINGFACEHUB_API_TOKEN")
-        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+    # LLM Settings (OpenRouter / OpenAI API)
+    OPENROUTER_API_KEY: str = (
+        os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("OR_API_KEY")
         or ""
     )
-    HF_MODEL: str = os.getenv("HF_MODEL", "Qwen/Qwen2.5-VL-72B-Instruct")
-    HF_FALLBACK_MODEL: str = "meta-llama/Llama-3.2-11B-Vision-Instruct"
-    HF_MAX_RETRIES: int = 3
-    HF_RETRY_DELAY: float = 2.0
+    OPENROUTER_BASE_URL: str = os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
+    OPENROUTER_MODEL: str = os.getenv("OPENROUTER_MODEL", os.getenv("OPENAI_MODEL", "openai/gpt-4o-mini"))
+    OPENROUTER_FALLBACK_MODEL: str = "openai/gpt-4o"
+    OPENROUTER_MAX_RETRIES: int = 3
+    OPENROUTER_RETRY_DELAY: float = 2.0
+
+    # Backwards compatibility aliases
+    OPENAI_API_KEY: str = (
+        os.getenv("OPENROUTER_API_KEY")
+        or os.getenv("OPENAI_API_KEY")
+        or os.getenv("OR_API_KEY")
+        or ""
+    )
+    OPENAI_MODEL: str = OPENROUTER_MODEL
+    OPENAI_FALLBACK_MODEL: str = OPENROUTER_FALLBACK_MODEL
+    OPENAI_MAX_RETRIES: int = OPENROUTER_MAX_RETRIES
+    OPENAI_RETRY_DELAY: float = OPENROUTER_RETRY_DELAY
     ANTHROPIC_API_KEY: str = os.getenv("ANTHROPIC_API_KEY", "")
     CLAUDE_MODEL: str = os.getenv("CLAUDE_MODEL", "claude-sonnet-4-6")
     
