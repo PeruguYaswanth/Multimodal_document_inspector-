@@ -12,7 +12,8 @@ import {
   Filter,
   Layers,
   HelpCircle,
-  ExternalLink
+  ExternalLink,
+  RefreshCw
 } from "lucide-react";
 import { askQuery } from "../api";
 import DocumentTypeBadge from "./DocumentTypeBadge";
